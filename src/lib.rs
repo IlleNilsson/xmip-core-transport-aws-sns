@@ -32,18 +32,24 @@
 //! answers `None`. The origin URI is the topic ARN with the message id as
 //! its fragment. A send target is a topic ARN, or empty for this
 //! transport's own topic.
+//!
+//! The transport is its own far end (ADR-0051): [`Loopback`] stands the
+//! session up at the endpoint's authority as SNS, takes the one publish,
+//! and delivers it to the subscription this transport listens as.
 
 pub mod client;
 pub mod session;
 pub mod subscription;
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 pub use client::{Client, VERSION};
+use http::endpoint;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
-use transport::error::{Result, TransportError};
+use transport::error::{Result, TransportError, protocol_error};
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 pub use transport_aws_sqs::query::refusal;
@@ -54,6 +60,7 @@ pub const fn ceiling() -> usize {
     256 * 1024
 }
 
+#[derive(Clone)]
 pub struct SnsTransport {
     endpoint: String,
     region: String,
@@ -206,6 +213,131 @@ impl Transport for SnsTransport {
     }
 }
 
+/// The topic the loopback publishes to and is subscribed to.
+pub const LOOPBACK_TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:loopback";
+
+impl SnsTransport {
+    /// Both ends on this machine: the session stands in for SNS on an
+    /// ephemeral local port, the subscription's endpoint listens on
+    /// another, one topic and one credential, the loopback timeout on
+    /// every side.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new("http://127.0.0.1:0", "eu-north-1", LOOPBACK_TOPIC)
+            .with_credentials("AKID", "secret")
+            .timing_out_after(LOOPBACK_TIMEOUT)
+    }
+
+    /// A fresh near end aimed at the session at `address`, with this
+    /// transport's credentials and topic.
+    fn aimed_at(&self, address: &str) -> Self {
+        let near = Self::new(format!("http://{address}"), &self.region, &self.topic_arn)
+            .with_credentials(&self.access_key, &self.secret_key);
+        match self.timeout {
+            Some(timeout) => near.timing_out_after(timeout),
+            None => near,
+        }
+    }
+}
+
+/// A session listening for its one publish, and the endpoint it then
+/// delivers to: the far end is SNS and the subscription both, so what
+/// comes back went through the topic and arrived the way a Receive
+/// Location takes it.
+struct Serving {
+    transport: SnsTransport,
+    session: Session,
+    listener: TcpListener,
+    address: String,
+    subscription: TcpListener,
+    subscription_address: String,
+}
+
+impl FarEnd for Serving {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(mut self: Box<Self>) -> Result<Arrived> {
+        let published = match self.session.serve_one(&self.listener)? {
+            Event::Published(arrived) => arrived,
+            other => {
+                return Err(protocol_error(format!("{other:?} where a publish was due")));
+            }
+        };
+        let notification = notification(&published)?;
+        let Serving {
+            transport,
+            session,
+            subscription,
+            subscription_address,
+            ..
+        } = *self;
+        let taking = std::thread::spawn(move || transport.accept_one(&subscription));
+        let delivered =
+            session.deliver(&format!("http://{subscription_address}/sns"), &notification);
+        if delivered.is_err() {
+            drop(TcpStream::connect(&subscription_address));
+        }
+        let taken = taking
+            .join()
+            .map_err(|_| protocol_error("the endpoint's thread panicked"))?;
+        delivered?;
+        taken?
+            .into_iter()
+            .next()
+            .ok_or_else(|| protocol_error("delivered, but the endpoint took nothing"))
+    }
+}
+
+/// The notification SNS delivers for what was published: the Stream back
+/// as the text it is, under the topic and the id the session gave it.
+fn notification(published: &Arrived) -> Result<Delivery> {
+    let (topic_arn, message_id) = published
+        .origin_uri
+        .rsplit_once('#')
+        .ok_or_else(|| protocol_error("a publish with no message id"))?;
+    let message = String::from_utf8(published.bytes.clone())
+        .map_err(|_| protocol_error("a published message that is not text"))?;
+    Ok(Delivery::Notification {
+        topic_arn: topic_arn.to_string(),
+        message_id: message_id.to_string(),
+        message,
+    })
+}
+
+impl Loopback for SnsTransport {
+    fn ceiling(&self) -> Option<usize> {
+        Some(ceiling())
+    }
+
+    /// What SNS does not carry: a message is text, at least one character
+    /// of it, every one permitted by XML 1.0.
+    fn refuses(&self, payload: &[u8]) -> Option<String> {
+        refusal(payload)
+    }
+
+    /// The session bound at the endpoint's authority — `127.0.0.1:0` for
+    /// the loopback — and the subscription's endpoint bound where this
+    /// transport listens.
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let (listener, address) = socket::bind_tcp(&endpoint::authority(&self.endpoint)?)?;
+        let (subscription, subscription_address) = self.bind()?;
+        Ok(Box::new(Serving {
+            transport: self.clone(),
+            session: self.session(),
+            listener,
+            address,
+            subscription,
+            subscription_address,
+        }))
+    }
+
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        self.aimed_at(address).send("", payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +453,61 @@ mod tests {
         assert!(failure.message.contains("at least one"), "{failure}");
         assert!(refusal(&[0xff]).is_some());
         assert!(refusal(b"text").is_none());
+    }
+
+    /// The edge payloads, and one at the brim: SNS carries the text among
+    /// them and refuses the rest, which the test checks either way.
+    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+            ("the brim", vec![b'x'; ceiling()]),
+        ]
+    }
+
+    #[test]
+    fn a_loopback_round_publishes_and_takes_the_delivery_at_the_subscription() {
+        let sns = SnsTransport::loopback();
+        let arrived = sns
+            .round("r\u{e4}k <&> \"b\"\r\n".as_bytes())
+            .expect("round");
+        assert_eq!(arrived.bytes, "r\u{e4}k <&> \"b\"\r\n".as_bytes());
+        assert!(
+            arrived
+                .origin_uri
+                .starts_with(&format!("{LOOPBACK_TOPIC}#")),
+            "{}",
+            arrived.origin_uri
+        );
+        assert_eq!(sns.name(), "aws-sns");
+    }
+
+    #[test]
+    fn the_loopback_returns_the_text_edge_payloads_whole_and_refuses_the_rest() {
+        let sns = SnsTransport::loopback();
+        assert_eq!(sns.ceiling(), Some(256 * 1024));
+        let mut carried = 0;
+        for (name, payload) in edge_payloads() {
+            match sns.refuses(&payload) {
+                None => {
+                    let arrived = sns.round(&payload).expect(name);
+                    assert_eq!(arrived.bytes, payload, "{name}");
+                    carried += 1;
+                }
+                Some(why) => {
+                    let failure = sns.round(&payload).expect_err(name);
+                    assert!(failure.message.starts_with("send failed:"), "{failure}");
+                    assert!(failure.message.contains(&why), "{name}: {failure}");
+                }
+            }
+        }
+        assert_eq!(carried, 3, "one byte, the CRLF storm and the brim");
+        let over = vec![b'x'; ceiling() + 1];
+        let failure = sns.round(&over).expect_err("over the brim");
+        assert!(failure.message.contains("262144"), "{failure}");
     }
 }
