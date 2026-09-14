@@ -15,9 +15,9 @@ use transport::xml::first;
 
 use http::endpoint;
 use http::message::{self, Request, Response};
+use http::query::{self, text};
+use http::sigv4::{self, Signer};
 use http::target::HttpTarget;
-use transport_aws_sqs::query::{self, text};
-use transport_aws_sqs::sigv4::{self, Signer};
 
 /// The Query API version every request names.
 pub const VERSION: &str = "2010-03-31";
