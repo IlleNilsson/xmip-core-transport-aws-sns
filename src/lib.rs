@@ -18,10 +18,11 @@
 //! session.rs       the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, the percent-encoding and HTTP itself come from the http
-//! technology; the Query API and the signer for a service that is not S3
-//! from the aws-sqs technology, which built them for this crate to take;
-//! the flat XML scan from the capability (ADR-0044).
+//! The endpoint, the percent-encoding, HTTP itself, the Query API and
+//! Signature Version 4 come from the http technology, the flat XML scan
+//! from the capability (ADR-0044). Until 2026-09-14 the Query API and the
+//! signer came from the aws-sqs technology, a sideways import the record
+//! forbids; what rides on HTTP is shared through the http technology.
 //!
 //! A message is text — one to 256 KiB of the characters XML permits — and
 //! the transport carries bytes as they are or says why it cannot: what is
@@ -46,13 +47,13 @@ use std::time::Duration;
 
 pub use client::{Client, VERSION};
 use http::endpoint;
+pub use http::query::refusal;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
 use transport::error::{Result, TransportError, protocol_error};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
-pub use transport_aws_sqs::query::refusal;
 
 /// The largest message SNS carries: 256 KiB.
 #[must_use]

@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use transport::error::{Result, TransportError, protocol_error};
-use transport::socket;
 
 use http::endpoint;
 use http::message::{self, Request, Response};
+use http::server;
 use http::target::HttpTarget;
 
 /// What SNS delivered.
@@ -142,19 +142,17 @@ pub fn push(endpoint_url: &str, delivery: &Delivery, timeout: Option<Duration>) 
 /// Where the connection could not be accepted, broke, or did not carry a
 /// delivery — which is answered 400 before the error is returned.
 pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<Delivery> {
-    let (stream, _) = socket::accept_tcp(listener, timeout)?;
-    let (mut reader, mut writer) = socket::split(stream)?;
-    let request = message::read_request(&mut reader)?
-        .ok_or_else(|| protocol_error("a connection that sent no request"))?;
-    let delivery = parse(&request);
-    let status = if delivery.is_ok() { 200 } else { 400 };
-    message::write_response(&mut writer, &Response::new(status))?;
-    delivery
+    server::serve_one(listener, timeout, |request| {
+        let delivery = parse(request);
+        let status = if delivery.is_ok() { 200 } else { 400 };
+        (delivery, Response::new(status))
+    })?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transport::socket;
 
     const TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:orders";
 

@@ -17,14 +17,12 @@ path = "src/lib.rs"
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
-# The endpoint parser, the request and its answer, percent-encoding, and TLS
-# behind the `tls` feature — one TLS stack in the estate, the http
-# technology's (ADR-0033).
+# The endpoint parser, the request and its answer, percent-encoding,
+# Signature Version 4, the Query API, and TLS behind the `tls` feature —
+# one TLS stack in the estate, the http technology's (ADR-0033). The
+# signer and the Query API came from the aws-sqs technology until
+# 2026-09-14; a technology never imports a sibling for them (ADR-0044).
 http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
-# Signature Version 4 for a service that is not S3, and the Query API both
-# sides speak, come from the aws-sqs technology, which built them for SNS and
-# Kinesis to take (ADR-0044).
-transport_aws_sqs = { package = "xmip-core-transport-aws-sqs", git = "https://github.com/IlleNilsson/xmip-core-transport-aws-sqs", branch = "main" }
 # The API answers in JSON, and serde reads it.
 serde_json = "1"
 
