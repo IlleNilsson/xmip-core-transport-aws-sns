@@ -42,7 +42,7 @@ pub mod client;
 pub mod session;
 pub mod subscription;
 
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::{Client, VERSION};
@@ -278,7 +278,13 @@ impl FarEnd for Serving {
         let delivered =
             session.deliver(&format!("http://{subscription_address}/sns"), &notification);
         if delivered.is_err() {
-            drop(TcpStream::connect(&subscription_address));
+            // The poke only has to be quick, because the endpoint bounds its own wait. An
+            // unbounded poke under port exhaustion waited on Windows' ~21-second SYN
+            // schedule; it was bare until 2026-09-21.
+            drop(socket::connect_tcp(
+                &subscription_address,
+                Some(Duration::from_millis(250)),
+            ));
         }
         let taken = taking
             .join()
