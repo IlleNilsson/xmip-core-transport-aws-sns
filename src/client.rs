@@ -68,7 +68,7 @@ impl Client {
         let request = query::request("/", &parameters).header("Host", &self.host);
         let signed = self.signer.sign(request, &sigv4::now());
         let answer = self.call(&self.endpoint, &signed)?;
-        Ok(first(&answer.text(), "MessageId").unwrap_or_default())
+        Ok(first(&answer.text(), "MessageId")?.unwrap_or_default())
     }
 
     /// Confirm a subscription by fetching the `SubscribeURL` SNS delivered,
@@ -84,7 +84,7 @@ impl Client {
         let endpoint = format!("{scheme}://{}", target.authority);
         let request = Request::new("GET", target.path).header("Host", target.authority);
         let answer = self.call(&endpoint, &request)?;
-        Ok(first(&answer.text(), "SubscriptionArn").unwrap_or_default())
+        Ok(first(&answer.text(), "SubscriptionArn")?.unwrap_or_default())
     }
 
     fn call(&self, endpoint: &str, request: &Request) -> Result<Response> {
