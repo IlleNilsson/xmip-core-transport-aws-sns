@@ -18,16 +18,17 @@
 //! session.rs       the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, the percent-encoding, HTTP itself, the Query API and
-//! Signature Version 4 come from the http technology, the flat XML scan
-//! from the capability (ADR-0044). Until 2026-09-14 the Query API and the
-//! signer came from the aws-sqs technology, a sideways import the record
-//! forbids; what rides on HTTP is shared through the http technology.
+//! The endpoint, the percent-encoding and HTTP itself come from the http
+//! technology; the Query API and Signature Version 4 from the AWS crate,
+//! the flat XML scan from the capability (ADR-0044). Until 2026-09-14 the
+//! Query API and the signer came from the aws-sqs technology, a sideways
+//! import the record forbids; what AWS speaks is shared through the AWS
+//! crate (the owner's ruling of 2026-09-22).
 //!
 //! A message is text — one to 256 KiB of the characters XML permits — and
 //! the transport carries bytes as they are or says why it cannot: what is
 //! not that text is refused before a request is formed, never encoded and
-//! called delivered. [`ceiling`] and [`refusal`] say both rules.
+//! called delivered. [`ceiling`] and [`aws::query::refusal`] say both rules.
 //!
 //! A topic is not an artefact anyone claims, so [`Transport::claims`]
 //! answers `None`. The origin URI is the topic ARN with the message id as
@@ -45,9 +46,9 @@ pub mod subscription;
 use std::net::TcpListener;
 use std::time::Duration;
 
+use aws::query::refusal;
 pub use client::{Client, VERSION};
 use http::endpoint;
-pub use http::query::refusal;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
 use transport::error::{Result, TransportError, protocol_error};
