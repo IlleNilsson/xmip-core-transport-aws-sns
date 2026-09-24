@@ -13,10 +13,10 @@ use std::time::Duration;
 use transport::error::Result;
 use transport::xml::first;
 
+use aws::query::{self, text};
+use aws::sigv4::{self, Signer};
 use http::endpoint;
 use http::message::{self, Request, Response};
-use http::query::{self, text};
-use http::sigv4::{self, Signer};
 use http::target::HttpTarget;
 
 /// The Query API version every request names.
