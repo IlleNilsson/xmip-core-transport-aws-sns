@@ -17,10 +17,12 @@ path = "src/lib.rs"
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
-# The endpoint parser, the request and its answer, percent-encoding, and
+# The endpoint parser, the request and its answer, and
 # TLS behind the `tls` feature — one TLS stack in the estate, the http
 # technology's (ADR-0033).
 http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
+# Percent-encoding (RFC 3986), written once for the estate.
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 # Signature Version 4 and the Query API. They came from the aws-sqs
 # technology until 2026-09-14; a technology never imports a sibling for
 # them, and what AWS speaks is the AWS crate's (ADR-0044, the owner's
