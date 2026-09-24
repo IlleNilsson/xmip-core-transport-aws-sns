@@ -18,12 +18,12 @@
 //! session.rs       the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, the percent-encoding and HTTP itself come from the http
-//! technology; the Query API and Signature Version 4 from the AWS crate,
-//! the flat XML scan from the capability (ADR-0044). Until 2026-09-14 the
-//! Query API and the signer came from the aws-sqs technology, a sideways
-//! import the record forbids; what AWS speaks is shared through the AWS
-//! crate (the owner's ruling of 2026-09-22).
+//! The endpoint and HTTP itself come from the http technology, the
+//! percent-encoding from `net`; the Query API and Signature Version 4 from
+//! the AWS crate, the flat XML scan from the capability (ADR-0044). Until
+//! 2026-09-14 the Query API and the signer came from the aws-sqs technology,
+//! a sideways import the record forbids; what AWS speaks is shared through
+//! the AWS crate (the owner's ruling of 2026-09-22).
 //!
 //! A message is text — one to 256 KiB of the characters XML permits — and
 //! the transport carries bytes as they are or says why it cannot: what is
@@ -51,8 +51,11 @@ pub use client::{Client, VERSION};
 use http::endpoint;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
-use transport::error::{Result, TransportError, protocol_error};
-use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+use transport::arrived::next_arrival;
+use transport::ceiling;
+use transport::error::{Result, protocol_error};
+use transport::listening::Listening;
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 
@@ -202,13 +205,7 @@ impl Transport for SnsTransport {
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        if bytes.len() > ceiling() {
-            return Err(TransportError::permanent(format!(
-                "{} bytes is over the {} one SNS message carries",
-                bytes.len(),
-                ceiling()
-            )));
-        }
+        ceiling::within(bytes.len(), ceiling(), "one SNS message carries")?;
         self.client()?
             .publish(self.resolve(target), bytes)
             .map(|_| ())
@@ -242,62 +239,6 @@ impl SnsTransport {
     }
 }
 
-/// A session listening for its one publish, and the endpoint it then
-/// delivers to: the far end is SNS and the subscription both, so what
-/// comes back went through the topic and arrived the way a Receive
-/// Location takes it.
-struct Serving {
-    transport: SnsTransport,
-    session: Session,
-    listener: TcpListener,
-    address: String,
-    subscription: TcpListener,
-    subscription_address: String,
-}
-
-impl FarEnd for Serving {
-    fn address(&self) -> &str {
-        &self.address
-    }
-
-    fn take_one(mut self: Box<Self>) -> Result<Arrived> {
-        let published = match self.session.serve_one(&self.listener)? {
-            Event::Published(arrived) => arrived,
-            other => {
-                return Err(protocol_error(format!("{other:?} where a publish was due")));
-            }
-        };
-        let notification = notification(&published)?;
-        let Serving {
-            transport,
-            session,
-            subscription,
-            subscription_address,
-            ..
-        } = *self;
-        let taking = std::thread::spawn(move || transport.accept_one(&subscription));
-        let delivered =
-            session.deliver(&format!("http://{subscription_address}/sns"), &notification);
-        if delivered.is_err() {
-            // The poke only has to be quick, because the endpoint bounds its own wait. An
-            // unbounded poke under port exhaustion waited on Windows' ~21-second SYN
-            // schedule; it was bare until 2026-09-21.
-            drop(socket::connect_tcp(
-                &subscription_address,
-                Some(Duration::from_millis(250)),
-            ));
-        }
-        let taken = taking
-            .join()
-            .map_err(|_| protocol_error("the endpoint's thread panicked"))?;
-        delivered?;
-        taken?
-            .into_iter()
-            .next()
-            .ok_or_else(|| protocol_error("delivered, but the endpoint took nothing"))
-    }
-}
-
 /// The notification SNS delivers for what was published: the Stream back
 /// as the text it is, under the topic and the id the session gave it.
 fn notification(published: &Arrived) -> Result<Delivery> {
@@ -325,20 +266,35 @@ impl Loopback for SnsTransport {
         refusal(payload)
     }
 
-    /// The session bound at the endpoint's authority — `127.0.0.1:0` for
-    /// the loopback — and the subscription's endpoint bound where this
-    /// transport listens.
+    /// A session listening for its one publish, bound at the endpoint's
+    /// authority — `127.0.0.1:0` for the loopback — and the endpoint it then
+    /// delivers to, bound where this transport listens: the far end is SNS
+    /// and the subscription both, so what comes back went through the topic
+    /// and arrived the way a Receive Location takes it.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let (listener, address) = socket::bind_tcp(&endpoint::authority(&self.endpoint)?)?;
+        let transport = self.clone();
+        let mut session = self.session();
         let (subscription, subscription_address) = self.bind()?;
-        Ok(Box::new(Serving {
-            transport: self.clone(),
-            session: self.session(),
-            listener,
-            address,
-            subscription,
-            subscription_address,
-        }))
+        Ok(Box::new(Listening::new(
+            move |listener: &TcpListener| {
+                let published = match session.serve_one(listener)? {
+                    Event::Published(arrived) => arrived,
+                    other => {
+                        return Err(protocol_error(format!("{other:?} where a publish was due")));
+                    }
+                };
+                let notification = notification(&published)?;
+                let url = format!("http://{subscription_address}/sns");
+                let (delivered, taken) = both_ends(
+                    move || transport.accept_one(&subscription),
+                    || session.deliver(&url, &notification),
+                    || poke(&subscription_address),
+                );
+                delivered?;
+                next_arrival(taken?, "delivered, but the endpoint took nothing")
+            },
+            socket::bind_tcp(&endpoint::authority(&self.endpoint)?)?,
+        )))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
