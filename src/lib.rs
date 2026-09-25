@@ -48,7 +48,7 @@ use std::time::Duration;
 
 use aws::query::refusal;
 pub use client::{Client, VERSION};
-use http::endpoint;
+use net::Endpoint;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
 use transport::arrived::next_arrival;
@@ -293,7 +293,7 @@ impl Loopback for SnsTransport {
                 delivered?;
                 next_arrival(taken?, "delivered, but the endpoint took nothing")
             },
-            socket::bind_tcp(&endpoint::authority(&self.endpoint)?)?,
+            socket::bind_tcp(&Endpoint::parse(&self.endpoint)?.address())?,
         )))
     }
 

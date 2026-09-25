@@ -21,9 +21,9 @@ use serde_json::{Value, json};
 use transport::error::{Result, TransportError, protocol_error};
 
 use http::endpoint;
-use http::message::{self, Request, Response};
 use http::server;
-use http::target::HttpTarget;
+use net::Endpoint;
+use net::http::{Request, Response};
 
 /// What SNS delivered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,11 +121,10 @@ pub fn deliver(path: &str, delivery: &Delivery) -> Request {
 /// Where the URL is not HTTP, the endpoint could not be reached, or it did
 /// not answer 2xx — SNS retries that, so it is retryable.
 pub fn push(endpoint_url: &str, delivery: &Delivery, timeout: Option<Duration>) -> Result<()> {
-    let target = HttpTarget::parse(endpoint_url)?;
-    let scheme = if target.secure { "https" } else { "http" };
-    let request = deliver(target.path, delivery).header("Host", target.authority);
-    let stream = endpoint::connect(&format!("{scheme}://{}", target.authority), timeout)?;
-    let response = message::exchange(stream, &request)?;
+    let endpoint = Endpoint::parse(endpoint_url)?;
+    let request = deliver(endpoint.path(), delivery).header("Host", &endpoint.authority());
+    let stream = endpoint::connect(&endpoint, timeout)?;
+    let response = net::http::exchange(stream, &request)?;
     if (200..300).contains(&response.status) {
         Ok(())
     } else {
@@ -229,9 +228,10 @@ mod tests {
             timeout,
         )
         .expect("pushed");
-        let stream = endpoint::connect(&format!("http://{address}"), timeout).expect("connect");
+        let at = Endpoint::parse(&format!("http://{address}")).expect("parsed");
+        let stream = endpoint::connect(&at, timeout).expect("connect");
         let answer =
-            message::exchange(stream, &Request::new("POST", "/").body(b"x")).expect("answered");
+            net::http::exchange(stream, &Request::new("POST", "/").body(b"x")).expect("answered");
         assert_eq!(answer.status, 400);
         let (first, second) = endpoint.join().expect("thread");
         assert_eq!(first.expect("a delivery"), notification("a"));

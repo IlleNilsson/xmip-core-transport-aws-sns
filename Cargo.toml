@@ -21,7 +21,8 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # TLS behind the `tls` feature — one TLS stack in the estate, the http
 # technology's (ADR-0033).
 http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
-# Percent-encoding (RFC 3986), written once for the estate.
+# Percent-encoding (RFC 3986), written once for the estate, HTTP/1.1 on the
+# wire (`net::http`) and the URL an endpoint is (`net::Endpoint`).
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 # Signature Version 4 and the Query API. They came from the aws-sqs
 # technology until 2026-09-14; a technology never imports a sibling for
