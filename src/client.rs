@@ -16,15 +16,14 @@ use transport::xml::first;
 use aws::query::{self, text};
 use aws::sigv4::{self, Signer};
 use http::endpoint;
-use http::message::{self, Request, Response};
-use http::target::HttpTarget;
+use net::Endpoint;
+use net::http::{Request, Response};
 
 /// The Query API version every request names.
 pub const VERSION: &str = "2010-03-31";
 
 pub struct Client {
-    endpoint: String,
-    host: String,
+    endpoint: Endpoint,
     signer: Signer,
     timeout: Option<Duration>,
 }
@@ -37,8 +36,7 @@ impl Client {
     /// Where `endpoint` is not an HTTP URL.
     pub fn new(endpoint: &str, region: &str, access_key: &str, secret_key: &str) -> Result<Self> {
         Ok(Self {
-            endpoint: endpoint.to_string(),
-            host: endpoint::authority(endpoint)?,
+            endpoint: Endpoint::parse(endpoint)?,
             signer: Signer::new("sns", region, access_key, secret_key),
             timeout: None,
         })
@@ -65,7 +63,7 @@ impl Client {
             ("TopicArn", topic_arn),
             ("Message", body),
         ];
-        let request = query::request("/", &parameters).header("Host", &self.host);
+        let request = query::request("/", &parameters).header("Host", &self.endpoint.authority());
         let signed = self.signer.sign(request, &sigv4::now());
         let answer = self.call(&self.endpoint, &signed)?;
         Ok(first(&answer.text(), "MessageId")?.unwrap_or_default())
@@ -79,17 +77,15 @@ impl Client {
     /// Where the URL is not an HTTP URL, or the endpoint refused or could
     /// not be reached.
     pub fn confirm(&self, subscribe_url: &str) -> Result<String> {
-        let target = HttpTarget::parse(subscribe_url)?;
-        let scheme = if target.secure { "https" } else { "http" };
-        let endpoint = format!("{scheme}://{}", target.authority);
-        let request = Request::new("GET", target.path).header("Host", target.authority);
+        let endpoint = Endpoint::parse(subscribe_url)?;
+        let request = Request::new("GET", endpoint.path()).header("Host", &endpoint.authority());
         let answer = self.call(&endpoint, &request)?;
         Ok(first(&answer.text(), "SubscriptionArn")?.unwrap_or_default())
     }
 
-    fn call(&self, endpoint: &str, request: &Request) -> Result<Response> {
+    fn call(&self, endpoint: &Endpoint, request: &Request) -> Result<Response> {
         let stream = endpoint::connect(endpoint, self.timeout)?;
-        query::judge("SNS", message::exchange(stream, request)?)
+        query::judge("SNS", net::http::exchange(stream, request)?)
     }
 }
 
