@@ -8,6 +8,10 @@
 //! wants. Both halves are here — the endpoint reads a delivery, the far end
 //! in [`crate::Session`] writes one — so the two cannot drift.
 //!
+//! The `Message` is a JSON string, so text on the wire; a [`Delivery`]
+//! carries it as the bytes of that text, UTF-8, which is what a Stream is
+//! (ADR-0038). Writing one turns the bytes back into text, or refuses.
+//!
 //! SNS also signs each delivery with a certificate it names in
 //! `SigningCertURL`; checking that is a fetch of the certificate and an RSA
 //! verification, which the estate does not carry yet. The endpoint trusts
@@ -20,6 +24,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use transport::error::{Result, TransportError, protocol_error};
 
+use aws::query::text;
 use http::endpoint;
 use http::server;
 use net::Endpoint;
@@ -33,11 +38,11 @@ pub enum Delivery {
         topic_arn: String,
         subscribe_url: String,
     },
-    /// One message from `topic_arn`.
+    /// One message from `topic_arn`, the bytes of its text.
     Notification {
         topic_arn: String,
         message_id: String,
-        message: String,
+        message: Vec<u8>,
     },
     /// A kind a Location has nothing to do with — an unsubscribe
     /// confirmation.
@@ -70,7 +75,7 @@ pub fn parse(request: &Request) -> Result<Delivery> {
         "Notification" => Ok(Delivery::Notification {
             topic_arn: field("TopicArn")?,
             message_id: field("MessageId")?,
-            message: field("Message")?,
+            message: field("Message")?.into_bytes(),
         }),
         _ => Ok(Delivery::Other(kind.clone())),
     }
@@ -78,8 +83,10 @@ pub fn parse(request: &Request) -> Result<Delivery> {
 
 /// The far end's side: the request SNS makes to deliver `delivery` to an
 /// endpoint at `path`.
-#[must_use]
-pub fn deliver(path: &str, delivery: &Delivery) -> Request {
+///
+/// # Errors
+/// Where a notification's message is not the text SNS carries.
+pub fn deliver(path: &str, delivery: &Delivery) -> Result<Request> {
     let (kind, body) = match delivery {
         Delivery::Confirmation {
             topic_arn,
@@ -103,15 +110,15 @@ pub fn deliver(path: &str, delivery: &Delivery) -> Request {
                 "Type": "Notification",
                 "TopicArn": topic_arn,
                 "MessageId": message_id,
-                "Message": message,
+                "Message": text(message).map_err(|e| e.at("SNS carries a message as text"))?,
             }),
         ),
         Delivery::Other(kind) => (kind.as_str(), json!({ "Type": kind })),
     };
-    Request::new("POST", path)
+    Ok(Request::new("POST", path)
         .header("x-amz-sns-message-type", kind)
         .header("Content-Type", "text/plain; charset=UTF-8")
-        .body(body.to_string().as_bytes())
+        .body(body.to_string().as_bytes()))
 }
 
 /// Push `delivery` to the endpoint at `endpoint_url`, as SNS does, and
@@ -122,7 +129,7 @@ pub fn deliver(path: &str, delivery: &Delivery) -> Request {
 /// not answer 2xx — SNS retries that, so it is retryable.
 pub fn push(endpoint_url: &str, delivery: &Delivery, timeout: Option<Duration>) -> Result<()> {
     let endpoint = Endpoint::parse(endpoint_url)?;
-    let request = deliver(endpoint.path(), delivery).header("Host", &endpoint.authority());
+    let request = deliver(endpoint.path(), delivery)?.header("Host", &endpoint.authority());
     let stream = endpoint::connect(&endpoint, timeout)?;
     let response = net::http::exchange(stream, &request)?;
     if (200..300).contains(&response.status) {
@@ -159,13 +166,13 @@ mod tests {
         Delivery::Notification {
             topic_arn: TOPIC.to_string(),
             message_id: "1-xmip".to_string(),
-            message: message.to_string(),
+            message: message.as_bytes().to_vec(),
         }
     }
 
     #[test]
     fn a_delivery_is_written_as_sns_writes_it_and_reads_back() {
-        let sent = deliver("/sns", &notification("r\u{e4}k <&> \"b\"\r\n"));
+        let sent = deliver("/sns", &notification("r\u{e4}k <&> \"b\"\r\n")).expect("written");
         assert_eq!(
             sent.header_value("x-amz-sns-message-type"),
             Some("Notification")
@@ -180,11 +187,32 @@ mod tests {
             subscribe_url: "http://sns.local/?Action=ConfirmSubscription".to_string(),
         };
         assert_eq!(
-            parse(&deliver("/", &confirmation)).expect("read"),
+            parse(&deliver("/", &confirmation).expect("written")).expect("read"),
             confirmation
         );
         let other = Delivery::Other("UnsubscribeConfirmation".to_string());
-        assert_eq!(parse(&deliver("/", &other)).expect("read"), other);
+        assert_eq!(
+            parse(&deliver("/", &other).expect("written")).expect("read"),
+            other
+        );
+    }
+
+    #[test]
+    fn a_message_that_is_not_text_is_refused_rather_than_written_lossy() {
+        let latin1 = Delivery::Notification {
+            topic_arn: TOPIC.to_string(),
+            message_id: "1-xmip".to_string(),
+            message: vec![b'r', 0xe4, b'k'],
+        };
+        let refused = deliver("/sns", &latin1).expect_err("not UTF-8");
+        assert!(!refused.retryable);
+        assert!(
+            refused
+                .message
+                .starts_with("SNS carries a message as text: ")
+                && refused.message.contains("UTF-8"),
+            "{refused}"
+        );
     }
 
     #[test]

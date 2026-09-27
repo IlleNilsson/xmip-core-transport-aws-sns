@@ -52,11 +52,15 @@ impl Client {
     /// Publish `bytes` as one message to the topic at `topic_arn`, and
     /// learn its id.
     ///
+    /// SNS carries a message as text, so this is where the bytes become
+    /// text: UTF-8 of the characters XML permits, or refused — never
+    /// replaced.
+    ///
     /// # Errors
     /// Where the bytes are not a message body, or the endpoint refused or
     /// could not be reached.
     pub fn publish(&self, topic_arn: &str, bytes: &[u8]) -> Result<String> {
-        let body = text(bytes)?;
+        let body = text(bytes).map_err(|e| e.at("SNS carries a message as text"))?;
         let parameters = [
             ("Action", "Publish"),
             ("Version", VERSION),
@@ -66,7 +70,7 @@ impl Client {
         let request = query::request("/", &parameters).header("Host", &self.endpoint.authority());
         let signed = self.signer.sign(request, &sigv4::now());
         let answer = self.call(&self.endpoint, &signed)?;
-        Ok(first(&answer.text(), "MessageId")?.unwrap_or_default())
+        Ok(first(answer.text()?, "MessageId")?.unwrap_or_default())
     }
 
     /// Confirm a subscription by fetching the `SubscribeURL` SNS delivered,
@@ -80,7 +84,7 @@ impl Client {
         let endpoint = Endpoint::parse(subscribe_url)?;
         let request = Request::new("GET", endpoint.path()).header("Host", &endpoint.authority());
         let answer = self.call(&endpoint, &request)?;
-        Ok(first(&answer.text(), "SubscriptionArn")?.unwrap_or_default())
+        Ok(first(answer.text()?, "SubscriptionArn")?.unwrap_or_default())
     }
 
     fn call(&self, endpoint: &Endpoint, request: &Request) -> Result<Response> {
@@ -134,8 +138,8 @@ mod tests {
             session
                 .messages()
                 .get(&format!("{TOPIC}#{id}"))
-                .map(String::as_str),
-            Some("UNA:+.? '")
+                .map(Vec::as_slice),
+            Some(&b"UNA:+.? '"[..])
         );
         assert!(matches!(&events[2], Event::Confirmed { topic_arn, .. } if topic_arn == TOPIC));
         assert_eq!(events[3], Event::Refused("InvalidParameter".to_string()));
@@ -147,6 +151,17 @@ mod tests {
         let refused = client.publish(TOPIC, b"\x00").expect_err("not text");
         assert!(!refused.retryable);
         assert!(refused.message.contains("U+0000"));
+        let refused = client
+            .publish(TOPIC, &[b'a', 0xff, 0xfe])
+            .expect_err("not UTF-8");
+        assert!(!refused.retryable);
+        assert!(
+            refused
+                .message
+                .starts_with("SNS carries a message as text: "),
+            "{refused}"
+        );
+        assert!(refused.message.contains("UTF-8"), "{refused}");
         assert!(Client::new("sns.local", "r", "a", "s").is_err());
         assert!(
             !client

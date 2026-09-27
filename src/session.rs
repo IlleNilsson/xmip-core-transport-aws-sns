@@ -65,14 +65,15 @@ impl Session {
         self
     }
 
-    /// Every message published so far, keyed `topic_arn#id`.
+    /// Every message published so far, keyed `topic_arn#id`: the bytes of
+    /// its text, as a Stream carries them.
     #[must_use]
-    pub fn messages(&self) -> BTreeMap<String, String> {
+    pub fn messages(&self) -> BTreeMap<String, Vec<u8>> {
         self.topics
             .iter()
             .flat_map(|(topic, held)| {
                 held.iter()
-                    .map(move |(id, message)| (origin(topic, id), message.clone()))
+                    .map(move |(id, message)| (origin(topic, id), message.clone().into_bytes()))
             })
             .collect()
     }
@@ -219,6 +220,7 @@ mod tests {
         assert!(
             response
                 .text()
+                .expect("text")
                 .contains("<MessageId>00000001-xmip</MessageId>")
         );
         let origin = format!("{TOPIC}#00000001-xmip");
@@ -227,8 +229,8 @@ mod tests {
             Event::Published(Arrived::new(origin.clone(), b"a<b".to_vec()))
         );
         assert_eq!(
-            session.messages().get(&origin).map(String::as_str),
-            Some("a<b")
+            session.messages().get(&origin).map(Vec::as_slice),
+            Some(&b"a<b"[..])
         );
         let empty = signed(&[("Action", "Publish"), ("Message", "")]);
         let (event, _) = session.answer(&empty);
@@ -253,7 +255,7 @@ mod tests {
         let (event, response) = session.answer(&confirm);
         assert!(url.contains("Token=xmip"));
         assert_eq!(response.status, 200);
-        assert!(response.text().contains("<SubscriptionArn>"));
+        assert!(response.text().expect("text").contains("<SubscriptionArn>"));
         assert_eq!(
             event,
             Event::Confirmed {
