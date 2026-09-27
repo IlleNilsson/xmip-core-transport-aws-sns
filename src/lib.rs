@@ -25,9 +25,11 @@
 //! a sideways import the record forbids; what AWS speaks is shared through
 //! the AWS crate (the owner's ruling of 2026-09-22).
 //!
-//! A message is text — one to 256 KiB of the characters XML permits — and
-//! the transport carries bytes as they are or says why it cannot: what is
-//! not that text is refused before a request is formed, never encoded and
+//! A payload is bytes (ADR-0038, amendment 2026-09-26), and SNS carries a
+//! message as text — one to 256 KiB of the characters XML permits, UTF-8.
+//! Only the wire is text: the transport takes bytes and hands bytes up, and
+//! turns them into text where a publish or a delivery is written. What is
+//! not that text is refused there with the reason, never replaced and
 //! called delivered. [`ceiling`] and [`aws::query::refusal`] say both rules.
 //!
 //! A topic is not an artefact anyone claims, so [`Transport::claims`]
@@ -57,7 +59,8 @@ use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The largest message SNS carries: 256 KiB.
 #[must_use]
@@ -167,7 +170,7 @@ impl SnsTransport {
                 message,
             } => Ok(vec![Arrived::new(
                 session::origin(&topic_arn, &message_id),
-                message.into_bytes(),
+                message,
             )]),
             Delivery::Confirmation { subscribe_url, .. } => {
                 self.client()?.confirm(&subscribe_url)?;
@@ -212,6 +215,60 @@ impl Transport for SnsTransport {
     }
 }
 
+impl Configured for SnsTransport {
+    /// The address is the SNS endpoint, `https://sns.<region>.amazonaws.com`:
+    /// published to on send, confirmed through on receive. The access key
+    /// and its secret are the Location's credentials, not settings.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "region",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The AWS region requests are signed for, eu-north-1.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "topic_arn",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The ARN of the topic published to when a send target names none.",
+                applies: Applies::Send,
+            },
+            Setting {
+                name: "listen",
+                kind: Kind::Address,
+                presence: Presence::Required,
+                meaning: "Where a Receive Location listens for deliveries: the host and port \
+                          the subscription's endpoint URL resolves to.",
+                applies: Applies::Receive,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long an endpoint that stops answering is waited on; unbounded \
+                          when left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        // The access key and secret come through the Location's credentials.
+        let topic_arn = settings.optional_text("topic_arn").unwrap_or_default();
+        let mut transport = Self::new(address, settings.text("region"), topic_arn);
+        if let Some(listen) = settings.optional_text("listen") {
+            transport = transport.listening_at(listen);
+        }
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
+    }
+}
+
 /// The topic the loopback publishes to and is subscribed to.
 pub const LOOPBACK_TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:loopback";
 
@@ -240,18 +297,16 @@ impl SnsTransport {
 }
 
 /// The notification SNS delivers for what was published: the Stream back
-/// as the text it is, under the topic and the id the session gave it.
+/// as the bytes it is, under the topic and the id the session gave it.
 fn notification(published: &Arrived) -> Result<Delivery> {
     let (topic_arn, message_id) = published
         .origin_uri
         .rsplit_once('#')
         .ok_or_else(|| protocol_error("a publish with no message id"))?;
-    let message = String::from_utf8(published.bytes.clone())
-        .map_err(|_| protocol_error("a published message that is not text"))?;
     Ok(Delivery::Notification {
         topic_arn: topic_arn.to_string(),
         message_id: message_id.to_string(),
-        message,
+        message: published.bytes.clone(),
     })
 }
 
@@ -312,6 +367,42 @@ mod tests {
         SnsTransport::new(endpoint, "eu-north-1", TOPIC)
             .with_credentials("AKID", secret)
             .timing_out_after(Duration::from_secs(2))
+    }
+
+    #[test]
+    fn sns_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(SnsTransport::SETTINGS.problems(), Vec::<String>::new());
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let endpoint = "https://sns.eu-north-1.amazonaws.com";
+        let sent = SnsTransport::open(
+            endpoint,
+            Applies::Send,
+            &[
+                text("region", "eu-north-1"),
+                text("topic_arn", TOPIC),
+                text("timeout", "5s"),
+            ],
+        )
+        .expect("built");
+        assert_eq!(
+            (sent.endpoint.as_str(), sent.topic_arn.as_str()),
+            (endpoint, TOPIC)
+        );
+        assert_eq!(sent.timeout, Some(Duration::from_secs(5)));
+        let received = SnsTransport::open(
+            endpoint,
+            Applies::Receive,
+            &[text("region", "eu-north-1"), text("listen", "0.0.0.0:8443")],
+        )
+        .expect("built");
+        assert_eq!(received.bind, "0.0.0.0:8443");
+        let Err(refused) =
+            SnsTransport::open(endpoint, Applies::Receive, &[text("region", "eu-north-1")])
+        else {
+            panic!("a Receive Location says where it listens");
+        };
+        assert!(refused.message.contains("\"listen\""), "{refused}");
     }
 
     #[test]
@@ -415,6 +506,13 @@ mod tests {
         let failure = near.send("", b"").expect_err("empty");
         assert!(!failure.retryable);
         assert!(failure.message.contains("at least one"), "{failure}");
+        let failure = near.send("", &[b'r', 0xe4, b'k']).expect_err("Latin-1");
+        assert!(!failure.retryable, "{failure}");
+        assert!(
+            failure.message.contains("SNS carries a message as text")
+                && failure.message.contains("UTF-8"),
+            "{failure}"
+        );
         assert!(refusal(&[0xff]).is_some());
         assert!(refusal(b"text").is_none());
     }
