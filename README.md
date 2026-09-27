@@ -6,6 +6,8 @@ Signature Version 4 and the Query API come from [xmip-core-transport-aws](https:
 
 A Stream is bytes and SNS carries a message as text (ADR-0038, amendment 2026-09-26): the transport takes and hands up bytes, and turns them into UTF-8 text only on the wire. A payload that is not UTF-8 of the characters XML permits is refused at publish with the reason, never replaced.
 
+Requests go on connections kept between them (`http::endpoint::Connections`, offering HTTP/1.1): the transport holds them and hands them to every client it makes, so a call costs one exchange and not a connect, a TLS handshake and a `Connection: close`, as it did until 2026-09-27.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
