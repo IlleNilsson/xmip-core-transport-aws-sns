@@ -50,6 +50,7 @@ use std::time::Duration;
 
 use aws::query::refusal;
 pub use client::{Client, VERSION};
+use http::endpoint::Connections;
 use net::Endpoint;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
@@ -77,6 +78,9 @@ pub struct SnsTransport {
     secret_key: String,
     bind: String,
     timeout: Option<Duration>,
+    /// The connections kept to the service, shared by every client this
+    /// makes.
+    connections: Connections,
 }
 
 impl SnsTransport {
@@ -93,6 +97,7 @@ impl SnsTransport {
             secret_key: String::new(),
             bind: "127.0.0.1:0".to_string(),
             timeout: None,
+            connections: Connections::new(),
         }
     }
 
@@ -130,6 +135,7 @@ impl SnsTransport {
             &self.access_key,
             &self.secret_key,
         )?;
+        let client = client.sharing(self.connections.clone());
         Ok(match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
             None => client,

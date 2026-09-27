@@ -15,7 +15,7 @@ use transport::xml::first;
 
 use aws::query::{self, text};
 use aws::sigv4::{self, Signer};
-use http::endpoint;
+use http::endpoint::{Connections, Offer};
 use net::Endpoint;
 use net::http::{Request, Response};
 
@@ -26,6 +26,9 @@ pub struct Client {
     endpoint: Endpoint,
     signer: Signer,
     timeout: Option<Duration>,
+    /// The connections kept to the service, shared with the transport
+    /// that made this client.
+    connections: Connections,
 }
 
 impl Client {
@@ -39,6 +42,7 @@ impl Client {
             endpoint: Endpoint::parse(endpoint)?,
             signer: Signer::new("sns", region, access_key, secret_key),
             timeout: None,
+            connections: Connections::new(),
         })
     }
 
@@ -46,6 +50,14 @@ impl Client {
     #[must_use]
     pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Keep connections among `connections`, which the transport holds
+    /// across every client it makes.
+    #[must_use]
+    pub fn sharing(mut self, connections: Connections) -> Self {
+        self.connections = connections;
         self
     }
 
@@ -88,8 +100,10 @@ impl Client {
     }
 
     fn call(&self, endpoint: &Endpoint, request: &Request) -> Result<Response> {
-        let stream = endpoint::connect(endpoint, self.timeout)?;
-        query::judge("SNS", net::http::exchange(stream, request)?)
+        let answer = self
+            .connections
+            .exchange(endpoint, self.timeout, Offer::Http11, request)?;
+        query::judge("SNS", answer)
     }
 }
 
