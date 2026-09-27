@@ -148,11 +148,15 @@ pub fn push(endpoint_url: &str, delivery: &Delivery, timeout: Option<Duration>) 
 /// Where the connection could not be accepted, broke, or did not carry a
 /// delivery — which is answered 400 before the error is returned.
 pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<Delivery> {
-    server::serve_one(listener, timeout, |request| {
-        let delivery = parse(request);
-        let status = if delivery.is_ok() { 200 } else { 400 };
-        (delivery, Response::new(status))
-    })?
+    server::serve_one(listener, timeout, answer)?
+}
+
+/// What one delivery earns: what it was and `200`, or `400` where it was
+/// none — on a connection accepted for it, or one SNS keeps.
+pub fn answer(request: &Request) -> (Result<Delivery>, Response) {
+    let delivery = parse(request);
+    let status = if delivery.is_ok() { 200 } else { 400 };
+    (delivery, Response::new(status))
 }
 
 #[cfg(test)]

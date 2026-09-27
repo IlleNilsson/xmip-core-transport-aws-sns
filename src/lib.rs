@@ -51,6 +51,7 @@ use std::time::Duration;
 use aws::query::refusal;
 pub use client::{Client, VERSION};
 use http::endpoint::Connections;
+use http::inbound::Inbound;
 use net::Endpoint;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
@@ -81,6 +82,9 @@ pub struct SnsTransport {
     /// The connections kept to the service, shared by every client this
     /// makes.
     connections: Connections,
+    /// The subscription's listener a Receive Location keeps, and the
+    /// connections SNS keeps on it.
+    inbound: Inbound,
 }
 
 impl SnsTransport {
@@ -98,6 +102,7 @@ impl SnsTransport {
             bind: "127.0.0.1:0".to_string(),
             timeout: None,
             connections: Connections::new(),
+            inbound: Inbound::new(),
         }
     }
 
@@ -169,7 +174,13 @@ impl SnsTransport {
     /// Where the connection failed, the delivery was not one, or a
     /// confirmation could not be fetched.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Arrived>> {
-        match subscription::accept_one(listener, self.timeout)? {
+        self.arrivals(subscription::accept_one(listener, self.timeout)?)
+    }
+
+    /// What a delivery comes to: a notification as the Stream it carries;
+    /// a confirmation, confirmed by fetching its URL, as nothing yet.
+    fn arrivals(&self, delivery: Delivery) -> Result<Vec<Arrived>> {
+        match delivery {
             Delivery::Notification {
                 topic_arn,
                 message_id,
@@ -207,10 +218,15 @@ impl Transport for SnsTransport {
     }
 
     /// One delivery: the notification it carried, or nothing where it was
-    /// a confirmation, now confirmed.
+    /// a confirmation, now confirmed. Taken from whichever connection SNS
+    /// posts on first, on the listener the first receive bound and kept.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let (listener, _) = self.bind()?;
-        self.accept_one(&listener)
+        let delivery = self.inbound.next(
+            || self.bind(),
+            self.timeout,
+            |request, _| subscription::answer(request),
+        )??;
+        self.arrivals(delivery)
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
@@ -409,6 +425,28 @@ mod tests {
             panic!("a Receive Location says where it listens");
         };
         assert!(refused.message.contains("\"listen\""), "{refused}");
+    }
+
+    #[test]
+    fn every_receive_takes_from_the_listener_the_first_bound() {
+        let endpoint = node("http://127.0.0.1:1", "secret");
+        let address = endpoint.inbound.bound(|| endpoint.bind()).expect("bound");
+        let url = format!("http://{address}/sns");
+        let sns = std::thread::spawn(move || {
+            for round in 0..5u8 {
+                let delivery = Delivery::Notification {
+                    topic_arn: TOPIC.to_string(),
+                    message_id: format!("{round}-xmip"),
+                    message: format!("round {round}").into_bytes(),
+                };
+                subscription::push(&url, &delivery, Some(Duration::from_secs(2))).expect("pushed");
+            }
+        });
+        for round in 0..5u8 {
+            let arrived = endpoint.receive().expect("received");
+            assert_eq!(arrived[0].bytes, format!("round {round}").as_bytes());
+        }
+        sns.join().expect("sns");
     }
 
     #[test]
