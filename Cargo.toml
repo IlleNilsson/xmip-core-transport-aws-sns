@@ -32,6 +32,8 @@ net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson
 # them, and what AWS speaks is the AWS crate's (ADR-0044, the owner's
 # ruling of 2026-09-22).
 aws = { package = "xmip-core-transport-aws", git = "https://github.com/IlleNilsson/xmip-core-transport-aws", branch = "main" }
+# The flat XML the Query API answers in, read by local name (`codec::xml`).
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 # The API answers in JSON, and serde reads it.
 serde_json = "1"
 
