@@ -16,6 +16,7 @@
 //! client.rs        Xmip's side: publish, confirm
 //! subscription.rs  the endpoint SNS delivers to, and what it delivers
 //! session.rs       the far end a test or the playground runs on loopback
+//! loopback.rs      the transport as its own far end, through that session
 //! ```
 //!
 //! The endpoint and HTTP itself come from the http technology, the
@@ -42,26 +43,24 @@
 //! and delivers it to the subscription this transport listens as.
 
 pub mod client;
+mod loopback;
 pub mod session;
 pub mod subscription;
 
 use std::net::TcpListener;
 use std::time::Duration;
 
-use aws::query::refusal;
 pub use client::{Client, VERSION};
 use http::endpoint::Connections;
 use http::inbound::Inbound;
-use net::Endpoint;
+use http::server;
+pub use loopback::LOOPBACK_TOPIC;
 use net::ceiling;
 pub use session::{Event, Session};
 pub use subscription::Delivery;
-use transport::arrived::next_arrival;
 use transport::error::{Result, protocol_error};
-use transport::listening::Listening;
-use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Taken, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The largest message SNS carries: 256 KiB.
@@ -166,34 +165,35 @@ impl SnsTransport {
         socket::bind_tcp(&self.bind)
     }
 
-    /// Take one delivery off an already-bound listener: a notification as
-    /// the Stream it carries; a confirmation, confirmed by fetching its
-    /// URL, as nothing yet.
+    /// Take one delivery off an already-bound listener and answer it at
+    /// once, as a far end does: a notification as the Stream it carries;
+    /// a confirmation, confirmed by fetching its URL, as nothing yet.
     ///
     /// # Errors
     /// Where the connection failed, the delivery was not one, or a
     /// confirmation could not be fetched.
-    pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Arrived>> {
-        self.arrivals(subscription::accept_one(listener, self.timeout)?)
+    pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Taken>> {
+        let carried = self.carried(subscription::accept_one(listener, self.timeout)?)?;
+        Ok(carried
+            .map(|(origin, message)| Taken::new(origin, message))
+            .into_iter()
+            .collect())
     }
 
-    /// What a delivery comes to: a notification as the Stream it carries;
-    /// a confirmation, confirmed by fetching its URL, as nothing yet.
-    fn arrivals(&self, delivery: Delivery) -> Result<Vec<Arrived>> {
+    /// What a delivery carries: a notification's origin and message; a
+    /// confirmation, confirmed by fetching its URL, as nothing yet.
+    fn carried(&self, delivery: Delivery) -> Result<Option<(String, Vec<u8>)>> {
         match delivery {
             Delivery::Notification {
                 topic_arn,
                 message_id,
                 message,
-            } => Ok(vec![Arrived::new(
-                session::origin(&topic_arn, &message_id),
-                message,
-            )]),
+            } => Ok(Some((session::origin(&topic_arn, &message_id), message))),
             Delivery::Confirmation { subscribe_url, .. } => {
                 self.client()?.confirm(&subscribe_url)?;
-                Ok(Vec::new())
+                Ok(None)
             }
-            Delivery::Other(_) => Ok(Vec::new()),
+            Delivery::Other(_) => Ok(None),
         }
     }
 
@@ -217,16 +217,36 @@ impl Transport for SnsTransport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Unordered(
+            "each request is its own, and a connection waiting for its answer takes no next request",
+        )
+    }
+
     /// One delivery: the notification it carried, or nothing where it was
     /// a confirmation, now confirmed. Taken from whichever connection SNS
     /// posts on first, on the listener the first receive bound and kept.
+    ///
+    /// SNS waits for its answer to a notification until the verdict
+    /// (`http::server::status`): `202` on acceptance; `401`, `403` or
+    /// `422` on refusal, which SNS's delivery policy does not retry (a
+    /// `4xx` is final to it); `503` on failure, which SNS retries by the
+    /// subscription's delivery policy. The confirmation is answered at once.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let delivery = self.inbound.next(
+        let (delivery, reply) = self.inbound.next(
             || self.bind(),
             self.timeout,
-            |request, _| subscription::answer(request),
-        )??;
-        self.arrivals(delivery)
+            |request, _| subscription::hear(&request),
+        )?;
+        let Some((origin, message)) = self.carried(delivery?)? else {
+            return Ok(Vec::new());
+        };
+        let reply = reply.ok_or_else(|| protocol_error("a notification answered unheard"))?;
+        Ok(vec![Arrived::whole(
+            origin,
+            message,
+            reply.acknowledgement(server::verdict),
+        )])
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
@@ -291,97 +311,11 @@ impl Configured for SnsTransport {
     }
 }
 
-/// The topic the loopback publishes to and is subscribed to.
-pub const LOOPBACK_TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:loopback";
-
-impl SnsTransport {
-    /// Both ends on this machine: the session stands in for SNS on an
-    /// ephemeral local port, the subscription's endpoint listens on
-    /// another, one topic and one credential, the loopback timeout on
-    /// every side.
-    #[must_use]
-    pub fn loopback() -> Self {
-        Self::new("http://127.0.0.1:0", "eu-north-1", LOOPBACK_TOPIC)
-            .with_credentials("AKID", "secret")
-            .timing_out_after(LOOPBACK_TIMEOUT)
-    }
-
-    /// A fresh near end aimed at the session at `address`, with this
-    /// transport's credentials and topic.
-    fn aimed_at(&self, address: &str) -> Self {
-        let near = Self::new(format!("http://{address}"), &self.region, &self.topic_arn)
-            .with_credentials(&self.access_key, &self.secret_key);
-        match self.timeout {
-            Some(timeout) => near.timing_out_after(timeout),
-            None => near,
-        }
-    }
-}
-
-/// The notification SNS delivers for what was published: the Stream back
-/// as the bytes it is, under the topic and the id the session gave it.
-fn notification(published: &Arrived) -> Result<Delivery> {
-    let (topic_arn, message_id) = published
-        .origin_uri
-        .rsplit_once('#')
-        .ok_or_else(|| protocol_error("a publish with no message id"))?;
-    Ok(Delivery::Notification {
-        topic_arn: topic_arn.to_string(),
-        message_id: message_id.to_string(),
-        message: published.bytes.clone(),
-    })
-}
-
-impl Loopback for SnsTransport {
-    fn ceiling(&self) -> Option<usize> {
-        Some(ceiling())
-    }
-
-    /// What SNS does not carry: a message is text, at least one character
-    /// of it, every one permitted by XML 1.0.
-    fn refuses(&self, payload: &[u8]) -> Option<String> {
-        refusal(payload)
-    }
-
-    /// A session listening for its one publish, bound at the endpoint's
-    /// authority — `127.0.0.1:0` for the loopback — and the endpoint it then
-    /// delivers to, bound where this transport listens: the far end is SNS
-    /// and the subscription both, so what comes back went through the topic
-    /// and arrived the way a Receive Location takes it.
-    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
-        let transport = self.clone();
-        let mut session = self.session();
-        let (subscription, subscription_address) = self.bind()?;
-        Ok(Box::new(Listening::new(
-            move |listener: &TcpListener| {
-                let published = match session.serve_one(listener)? {
-                    Event::Published(arrived) => arrived,
-                    other => {
-                        return Err(protocol_error(format!("{other:?} where a publish was due")));
-                    }
-                };
-                let notification = notification(&published)?;
-                let url = format!("http://{subscription_address}/sns");
-                let (delivered, taken) = both_ends(
-                    move || transport.accept_one(&subscription),
-                    || session.deliver(&url, &notification),
-                    || poke(&subscription_address),
-                );
-                delivered?;
-                next_arrival(taken?, "delivered, but the endpoint took nothing")
-            },
-            socket::bind_tcp(&Endpoint::parse(&self.endpoint)?.address())?,
-        )))
-    }
-
-    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
-        self.aimed_at(address).send("", payload)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws::query::refusal;
+    use transport::loopback::Loopback;
 
     const TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:orders";
 
@@ -443,10 +377,48 @@ mod tests {
             }
         });
         for round in 0..5u8 {
-            let arrived = endpoint.receive().expect("received");
-            assert_eq!(arrived[0].bytes, format!("round {round}").as_bytes());
+            let mut arrived = endpoint.receive().expect("received");
+            let taken = arrived.remove(0).taken().expect("taken");
+            assert_eq!(taken.bytes, format!("round {round}").as_bytes());
         }
         sns.join().expect("sns");
+    }
+
+    #[test]
+    fn a_failed_notification_is_answered_503_and_delivered_again_a_refused_one_4xx() {
+        let endpoint = node("http://127.0.0.1:1", "secret");
+        let address = endpoint.inbound.bound(|| endpoint.bind()).expect("bound");
+        let url = format!("http://{address}/sns");
+        let sns = std::thread::spawn(move || {
+            let delivery = Delivery::Notification {
+                topic_arn: TOPIC.to_string(),
+                message_id: "1-xmip".to_string(),
+                message: b"once".to_vec(),
+            };
+            let timeout = Some(Duration::from_secs(2));
+            let failed = subscription::push(&url, &delivery, timeout).expect_err("failed");
+            subscription::push(&url, &delivery, timeout).expect("delivered again, taken");
+            let refused = subscription::push(&url, &delivery, timeout).expect_err("refused");
+            (failed, refused)
+        });
+        let mut arrived = endpoint.receive().expect("received");
+        let first = arrived.remove(0);
+        assert!(first.defers());
+        assert!(!sns.is_finished(), "no answer before the verdict");
+        first.failed().expect("failed");
+        let mut arrived = endpoint.receive().expect("again");
+        assert_eq!(arrived.remove(0).taken().expect("taken").bytes, b"once");
+        endpoint
+            .receive()
+            .expect("the third")
+            .remove(0)
+            .refused(transport::Refusal::Unacceptable)
+            .expect("refused");
+        let (failed, refused) = sns.join().expect("sns");
+        assert!(failed.retryable, "{failed}");
+        assert!(failed.message.contains("503"), "{failed}");
+        assert!(!refused.retryable, "SNS does not retry it: {refused}");
+        assert!(refused.message.contains("422"), "{refused}");
     }
 
     #[test]
@@ -488,7 +460,7 @@ mod tests {
         let (published, confirmed) = far_end.join().expect("thread");
         assert_eq!(
             published,
-            Event::Published(Arrived::new(
+            Event::Published(Taken::new(
                 arrived[0].origin_uri.clone(),
                 arrived[0].bytes.clone()
             ))

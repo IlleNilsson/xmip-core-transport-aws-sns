@@ -10,6 +10,10 @@ Requests go on connections kept between them (`http::endpoint::Connections`, off
 
 A Receive Location keeps its listener, bound on the first receive, and the connections senders keep open on it (`http::inbound::Inbound`): each receive takes the next request from whichever sends first, where until 2026-09-27 each receive bound a listener of its own, answered one request with `Connection: close`, and refused a request that came between two receives.
 
+## Acknowledged after the receive cycle
+
+SNS waits on its connection for the answer to a notification until the runtime's whole receive cycle has ended (runtime-model section 5): `202` on `Accepted`; `401`, `403` or `422` on `Refused` (`http::server::status`), a `4xx` SNS's delivery policy does not retry, so the notification is not delivered again; `503` on `Failed`, which SNS retries by the subscription's delivery policy, so the notification is delivered again. The `SubscriptionConfirmation` is the handshake, not a Stream: it is answered at once and confirmed by fetching its `SubscribeURL`. No round trip is added: the answer is the one SNS always waited for, only later.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it
