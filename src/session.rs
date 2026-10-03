@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::time::Duration;
 
-use transport::Arrived;
+use transport::Taken;
 use transport::error::Result;
 
 use crate::client::VERSION;
@@ -29,7 +29,7 @@ use net::percent::encode;
 pub enum Event {
     /// The client published a message; here is the Stream, its origin the
     /// topic ARN and the id it was given.
-    Published(Arrived),
+    Published(Taken),
     /// The client confirmed a subscription to `topic_arn`.
     Confirmed {
         topic_arn: String,
@@ -172,7 +172,7 @@ impl Session {
              </PublishResult></PublishResponse>"
         );
         (
-            Event::Published(Arrived::new(origin(topic, &id), body.as_bytes())),
+            Event::Published(Taken::new(origin(topic, &id), body.as_bytes())),
             answer(&xml),
         )
     }
@@ -226,7 +226,7 @@ mod tests {
         let origin = format!("{TOPIC}#00000001-xmip");
         assert_eq!(
             event,
-            Event::Published(Arrived::new(origin.clone(), b"a<b".to_vec()))
+            Event::Published(Taken::new(origin.clone(), b"a<b".to_vec()))
         );
         assert_eq!(
             session.messages().get(&origin).map(Vec::as_slice),

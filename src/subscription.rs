@@ -26,6 +26,7 @@ use transport::error::{Result, TransportError, protocol_error};
 
 use aws::query::text;
 use http::endpoint;
+use http::inbound::Heard;
 use http::server;
 use net::Endpoint;
 use net::http::{Request, Response};
@@ -126,20 +127,26 @@ pub fn deliver(path: &str, delivery: &Delivery) -> Result<Request> {
 ///
 /// # Errors
 /// Where the URL is not HTTP, the endpoint could not be reached, or it did
-/// not answer 2xx — SNS retries that, so it is retryable.
+/// not answer 2xx. As SNS's delivery policy judges it, a `5xx` — or a
+/// status outside `100`–`599` — is retryable, and any other answer is final:
+/// SNS does not retry a `4xx`.
 pub fn push(endpoint_url: &str, delivery: &Delivery, timeout: Option<Duration>) -> Result<()> {
     let endpoint = Endpoint::parse(endpoint_url)?;
     let request = deliver(endpoint.path(), delivery)?.header("Host", &endpoint.authority());
     let stream = endpoint::connect(&endpoint, timeout)?;
     let response = net::http::exchange(stream, &request)?;
-    if (200..300).contains(&response.status) {
-        Ok(())
-    } else {
-        Err(TransportError::retryable(format!(
-            "the endpoint answered {}",
-            response.status
-        )))
+    let status = response.status;
+    if (200..300).contains(&status) {
+        return Ok(());
     }
+    let message = format!("the endpoint answered {status}");
+    Err(
+        if (500..600).contains(&status) || !(100..600).contains(&status) {
+            TransportError::retryable(message)
+        } else {
+            TransportError::permanent(message)
+        },
+    )
 }
 
 /// Accept one delivery on `listener`, answer it, and say what it was.
@@ -151,12 +158,25 @@ pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<D
     server::serve_one(listener, timeout, answer)?
 }
 
-/// What one delivery earns: what it was and `200`, or `400` where it was
-/// none — on a connection accepted for it, or one SNS keeps.
+/// What one delivery earns at once: what it was and `200`, or `400` where
+/// it was none — what a far end answers.
 pub fn answer(request: &Request) -> (Result<Delivery>, Response) {
     let delivery = parse(request);
     let status = if delivery.is_ok() { 200 } else { 400 };
     (delivery, Response::new(status))
+}
+
+/// What one delivery on a connection SNS keeps is heard as: a
+/// notification waits for its receive cycle's verdict — `2xx` on
+/// acceptance, `5xx` on refusal, which SNS retries — and anything else is
+/// answered at once as [`answer`] answers it: a subscription confirmation
+/// is the handshake, not a Stream.
+#[must_use]
+pub fn hear(request: &Request) -> Heard<Result<Delivery>> {
+    match answer(request) {
+        (Ok(notification @ Delivery::Notification { .. }), _) => Heard::Waiting(Ok(notification)),
+        (delivery, response) => Heard::Answered(delivery, response),
+    }
 }
 
 #[cfg(test)]
