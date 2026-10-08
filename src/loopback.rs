@@ -7,6 +7,7 @@ use std::net::TcpListener;
 
 use aws::query::refusal;
 use net::Endpoint;
+use transport::ArrivalIdentity;
 use transport::arrived::next_arrival;
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
@@ -57,6 +58,12 @@ fn notification(published: &Taken) -> Result<Delivery> {
 }
 
 impl Loopback for SnsTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "the service pushes it: the request says who the service is, not the publisher",
+        )
+    }
+
     fn ceiling(&self) -> Option<usize> {
         Some(ceiling())
     }

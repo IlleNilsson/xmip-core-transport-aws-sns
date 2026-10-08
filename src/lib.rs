@@ -236,17 +236,21 @@ impl Transport for SnsTransport {
         let (delivery, reply) = self.inbound.next(
             || self.bind(),
             self.timeout,
-            |request, _| subscription::hear(&request),
+            |request, peer| {
+                let sender = server::Sender::of(&request, peer);
+                subscription::hear(&request).map(|delivery| (delivery, sender))
+            },
         )?;
+        let (delivery, sender) = delivery;
         let Some((origin, message)) = self.carried(delivery?)? else {
             return Ok(Vec::new());
         };
         let reply = reply.ok_or_else(|| protocol_error("a notification answered unheard"))?;
-        Ok(vec![Arrived::whole(
+        Ok(vec![sender.on(Arrived::whole(
             origin,
             message,
             reply.acknowledgement(server::verdict),
-        )])
+        ))])
     }
 
     fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
