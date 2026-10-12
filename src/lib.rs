@@ -223,6 +223,10 @@ impl Transport for SnsTransport {
         )
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("the listener waits for a delivery")
+    }
+
     /// One delivery: the notification it carried, or nothing where it was
     /// a confirmation, now confirmed. Taken from whichever connection SNS
     /// posts on first, on the listener the first receive bound and kept.
