@@ -460,7 +460,10 @@ mod tests {
         });
         near.send("", "r\u{e4}k <&> \"b\"\r\n".as_bytes())
             .expect("its own topic");
-        assert!(near.accept_one(&endpoint).expect("offered").is_empty());
+        assert_eq!(
+            near.accept_one(&endpoint).expect("offered"),
+            [] as [Taken; 0]
+        );
         let arrived = near.accept_one(&endpoint).expect("delivered");
         assert_eq!(arrived.len(), 1);
         assert_eq!(arrived[0].bytes, "r\u{e4}k <&> \"b\"\r\n".as_bytes());
