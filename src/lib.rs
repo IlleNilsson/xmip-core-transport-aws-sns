@@ -236,7 +236,7 @@ impl Transport for SnsTransport {
     /// `422` on refusal, which SNS's delivery policy does not retry (a
     /// `4xx` is final to it); `503` on failure, which SNS retries by the
     /// subscription's delivery policy. The confirmation is answered at once.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let (delivery, reply) = self.inbound.next(
             || self.bind(),
             self.timeout,
@@ -257,8 +257,15 @@ impl Transport for SnsTransport {
         ))])
     }
 
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
-        ceiling::within(bytes.len(), ceiling(), "one SNS message carries")?;
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered(
+            "one SNS message carries the whole body, signed with its digest",
+        )
+    }
+
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        ceiling::within(outgoing.len(), ceiling(), "one SNS message carries")?;
+        let bytes: &[u8] = &outgoing.gather()?;
         self.client()?
             .publish(self.resolve(target), bytes)
             .map(|_| ())
