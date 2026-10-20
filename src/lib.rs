@@ -3,7 +3,7 @@
 //! Streams that travel as SNS messages. One message is one Stream, its id
 //! kept beside it.
 //!
-//! SNS is the fan-out of every organisation that lives in AWS: a topic, and
+//! SNS is the fan-out of every organization that lives in AWS: a topic, and
 //! subscriptions that deliver what is published to it. A Send Location
 //! publishes a Stream as one message to a topic; a Receive Location is the
 //! HTTP endpoint a subscription delivers to — it confirms the subscription
@@ -33,7 +33,7 @@
 //! not that text is refused there with the reason, never replaced and
 //! called delivered. [`ceiling`] and [`aws::query::refusal`] say both rules.
 //!
-//! A topic is not an artefact anyone claims, so [`Transport::claims`]
+//! A topic is not an artifact anyone claims, so [`Transport::claims`]
 //! answers `None`. The origin URI is the topic ARN with the message id as
 //! its fragment. A send target is a topic ARN, or empty for this
 //! transport's own topic.
