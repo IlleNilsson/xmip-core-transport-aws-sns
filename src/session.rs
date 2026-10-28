@@ -20,9 +20,9 @@ use crate::client::VERSION;
 use crate::subscription::{self, Delivery};
 use aws::query::{self, parameter};
 use aws::sigv4::Signer;
+use codec::percent::encode;
 use http::server;
 use net::http::{Request, Response};
-use net::percent::encode;
 
 /// What the client did, as [`Session::serve_one`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
