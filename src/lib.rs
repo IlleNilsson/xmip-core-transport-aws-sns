@@ -312,6 +312,9 @@ impl Configured for SnsTransport {
         ],
     };
 
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["aws-sns"];
+
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         // The access key and secret come through the Location's credentials.
         let topic_arn = settings.optional_text("topic_arn").unwrap_or_default();
