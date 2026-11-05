@@ -1,5 +1,5 @@
 //! The far end: enough of SNS to answer one Location, and what a test or
-//! the playground puts on loopback.
+//! the essentials puts on loopback.
 //!
 //! Not SNS. One session holds the messages published to every topic it is
 //! asked about in memory, verifies every `Publish` against one credential,
