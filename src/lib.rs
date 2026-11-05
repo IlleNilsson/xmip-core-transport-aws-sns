@@ -15,7 +15,7 @@
 //! ```text
 //! client.rs        Xmip's side: publish, confirm
 //! subscription.rs  the endpoint SNS delivers to, and what it delivers
-//! session.rs       the far end a test or the playground runs on loopback
+//! session.rs       the far end a test or the essentials runs on loopback
 //! loopback.rs      the transport as its own far end, through that session
 //! ```
 //!
@@ -147,7 +147,7 @@ impl SnsTransport {
     }
 
     /// A far end that holds this transport's credentials, for a test or the
-    /// playground to run on loopback.
+    /// essentials to run on loopback.
     #[must_use]
     pub fn session(&self) -> Session {
         let session = Session::new(&self.region, &self.access_key, &self.secret_key);
