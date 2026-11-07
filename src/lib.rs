@@ -333,6 +333,7 @@ impl Configured for SnsTransport {
 mod tests {
     use super::*;
     use aws::query::refusal;
+    use std::assert_matches;
     use transport::loopback::Loopback;
 
     const TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:orders";
@@ -486,7 +487,7 @@ mod tests {
                 arrived[0].bytes.clone()
             ))
         );
-        assert!(matches!(confirmed, Event::Confirmed { topic_arn, .. } if topic_arn == TOPIC));
+        assert_matches!(confirmed, Event::Confirmed { topic_arn, .. } if topic_arn == TOPIC);
     }
 
     #[test]
