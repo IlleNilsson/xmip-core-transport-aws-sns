@@ -110,6 +110,7 @@ impl Client {
 mod tests {
     use super::*;
     use crate::session::{Event, Session};
+    use std::assert_matches;
     use transport::socket;
 
     const TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:orders";
@@ -154,7 +155,7 @@ mod tests {
                 .map(Vec::as_slice),
             Some(&b"UNA:+.? '"[..])
         );
-        assert!(matches!(&events[2], Event::Confirmed { topic_arn, .. } if topic_arn == TOPIC));
+        assert_matches!(&events[2], Event::Confirmed { topic_arn, .. } if topic_arn == TOPIC);
         assert_eq!(events[3], Event::Refused("InvalidParameter".to_string()));
     }
 
