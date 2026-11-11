@@ -198,13 +198,9 @@ impl SnsTransport {
     }
 
     /// The topic a target names, or this transport's own where it names
-    /// none.
+    /// none (`transport::destination::named`).
     fn resolve<'a>(&'a self, target: &'a str) -> &'a str {
-        if target.is_empty() {
-            &self.topic_arn
-        } else {
-            target
-        }
+        transport::destination::named(target).unwrap_or(&self.topic_arn)
     }
 }
 
@@ -315,6 +311,11 @@ impl Configured for SnsTransport {
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["aws-sns"];
 
+    /// The `topic_arn` setting: the address names only the endpoint.
+    fn own_target(_address: &str) -> &str {
+        transport::destination::OWN
+    }
+
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         // The access key and secret come through the Location's credentials.
         let topic_arn = settings.optional_text("topic_arn").unwrap_or_default();
@@ -378,6 +379,18 @@ mod tests {
             panic!("a Receive Location says where it listens");
         };
         assert!(refused.message.contains("\"listen\""), "{refused}");
+    }
+
+    #[test]
+    fn a_send_location_publishes_to_its_topic_and_a_target_naming_another_wins() {
+        use xcore::settings::Given;
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let location = "aws-sns://sns.eu-north-1.amazonaws.com";
+        let given = [text("region", "eu-north-1"), text("topic_arn", TOPIC)];
+        let sent = SnsTransport::open(location, Applies::Send, &given).expect("built");
+        assert_eq!(sent.resolve(SnsTransport::own_target(location)), TOPIC);
+        let other = "arn:aws:sns:eu-north-1:123456789012:invoices";
+        assert_eq!(sent.resolve(other), other);
     }
 
     #[test]
