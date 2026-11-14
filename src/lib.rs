@@ -333,6 +333,13 @@ impl Configured for SnsTransport {
             None => transport,
         })
     }
+
+    /// Each caller's turn on the subscription's listener taking at most
+    /// `turn`.
+    fn turning_within(mut self, turn: Duration) -> Self {
+        self.inbound = self.inbound.turning_within(turn);
+        self
+    }
 }
 
 #[cfg(test)]
