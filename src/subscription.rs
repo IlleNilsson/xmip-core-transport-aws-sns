@@ -175,6 +175,7 @@ pub fn answer(request: &Request) -> (Result<Delivery>, Response) {
 pub fn hear(request: &Request) -> Heard<Result<Delivery>> {
     match answer(request) {
         (Ok(notification @ Delivery::Notification { .. }), _) => Heard::Waiting(Ok(notification)),
+        (Err(why), response) => Heard::Refused(why, response),
         (delivery, response) => Heard::Answered(delivery, response),
     }
 }
