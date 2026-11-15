@@ -12,7 +12,7 @@ use transport::arrived::next_arrival;
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback, both_ends, poke};
-use transport::{Taken, Transport, socket};
+use transport::{Configured, Taken, Transport, socket};
 
 use crate::{Delivery, Event, SnsTransport, ceiling};
 

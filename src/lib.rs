@@ -121,13 +121,6 @@ impl SnsTransport {
         self
     }
 
-    /// Give up on an endpoint that stops answering after `timeout`.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// The client this transport speaks through.
     ///
     /// # Errors
@@ -302,14 +295,12 @@ impl Configured for SnsTransport {
                           the subscription's endpoint URL resolves to.",
                 applies: Applies::Receive,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long an endpoint that stops answering is waited on; unbounded \
-                          when left out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long an endpoint that stops answering is waited on; unbounded \
+                 when left out.",
+            ),
         ],
     };
 
@@ -321,6 +312,10 @@ impl Configured for SnsTransport {
         transport::destination::OWN
     }
 
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
+
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         // The access key and secret come through the Location's credentials.
         let topic_arn = settings.optional_text("topic_arn").unwrap_or_default();
@@ -328,10 +323,7 @@ impl Configured for SnsTransport {
         if let Some(listen) = settings.optional_text("listen") {
             transport = transport.listening_at(listen);
         }
-        Ok(match settings.optional_duration("timeout") {
-            Some(timeout) => transport.timing_out_after(timeout),
-            None => transport,
-        })
+        Ok(transport)
     }
 
     /// Each caller's turn on the subscription's listener taking at most
