@@ -224,7 +224,7 @@ impl Transport for SnsTransport {
 
     /// One delivery: the notification it carried, or nothing where it was
     /// a confirmation, now confirmed. Taken from whichever connection SNS
-    /// posts on first, on the listener the first receive bound and kept.
+    /// posts on first, on the listener its open bound and kept.
     ///
     /// SNS waits for its answer to a notification until the verdict
     /// (`http::server::status`): `202` on acceptance; `401`, `403` or
@@ -232,14 +232,10 @@ impl Transport for SnsTransport {
     /// `4xx` is final to it); `503` on failure, which SNS retries by the
     /// subscription's delivery policy. The confirmation is answered at once.
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let (delivery, reply) = self.inbound.next(
-            || self.bind(),
-            self.timeout,
-            |request, peer| {
-                let sender = server::Sender::of(&request, peer);
-                subscription::hear(&request).map(|delivery| (delivery, sender))
-            },
-        )?;
+        let (delivery, reply) = self.inbound.next(self.timeout, |request, peer| {
+            let sender = server::Sender::of(&request, peer);
+            subscription::hear(&request).map(|delivery| (delivery, sender))
+        })?;
         let (delivery, sender) = delivery;
         let Some((origin, message)) = self.carried(delivery?)? else {
             return Ok(Vec::new());
@@ -340,6 +336,12 @@ impl Configured for SnsTransport {
         self.inbound = self.inbound.timed_by(clock);
         self.connections = self.connections.timed_by(clock);
         self
+    }
+
+    /// The subscription's endpoint every receive takes from, bound where
+    /// a Receive Location listens ([`SnsTransport::bind`]).
+    fn listening(&self) -> Result<Option<&str>> {
+        self.inbound.bound(|| self.bind()).map(Some)
     }
 }
 
