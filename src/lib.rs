@@ -166,7 +166,8 @@ impl SnsTransport {
     /// Where the connection failed, the delivery was not one, or a
     /// confirmation could not be fetched.
     pub fn accept_one(&self, listener: &TcpListener) -> Result<Vec<Taken>> {
-        let carried = self.carried(subscription::accept_one(listener, self.timeout)?)?;
+        let clock = std::sync::Arc::clone(self.connections.clock());
+        let carried = self.carried(subscription::accept_one(listener, self.timeout, clock)?)?;
         Ok(carried
             .map(|(origin, message)| Taken::new(origin, message))
             .into_iter()

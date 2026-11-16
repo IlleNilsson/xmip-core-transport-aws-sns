@@ -19,6 +19,7 @@
 //! address are for.
 
 use std::net::TcpListener;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -30,6 +31,7 @@ use http::inbound::Heard;
 use http::server;
 use net::Endpoint;
 use net::http::{Request, Response};
+use xcore::Clock;
 
 /// What SNS delivered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,13 +151,18 @@ pub fn push(endpoint_url: &str, delivery: &Delivery, timeout: Option<Duration>) 
     )
 }
 
-/// Accept one delivery on `listener`, answer it, and say what it was.
+/// Accept one delivery on `listener`, answer it, and say what it was, its
+/// HTTP/2 frames in a span counted on `clock`.
 ///
 /// # Errors
 /// Where the connection could not be accepted, broke, or did not carry a
 /// delivery — which is answered 400 before the error is returned.
-pub fn accept_one(listener: &TcpListener, timeout: Option<Duration>) -> Result<Delivery> {
-    server::serve_one(listener, timeout, answer)?
+pub fn accept_one(
+    listener: &TcpListener,
+    timeout: Option<Duration>,
+    clock: Arc<dyn Clock>,
+) -> Result<Delivery> {
+    server::serve_one(listener, timeout, clock, answer)?
 }
 
 /// What one delivery earns at once: what it was and `200`, or `400` where
@@ -271,8 +278,8 @@ mod tests {
         let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
         let timeout = Some(Duration::from_secs(2));
         let endpoint = std::thread::spawn(move || {
-            let first = accept_one(&listener, timeout);
-            let second = accept_one(&listener, timeout);
+            let first = accept_one(&listener, timeout, Arc::new(xcore::SystemClock));
+            let second = accept_one(&listener, timeout, Arc::new(xcore::SystemClock));
             (first, second)
         });
         push(
