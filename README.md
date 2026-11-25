@@ -6,6 +6,8 @@ A Send Location publishes to the topic its `topic_arn` setting names: it sends t
 
 Signature Version 4 and the Query API come from [xmip-core-transport-aws](https://github.com/IlleNilsson/xmip-core-transport-aws), where every AWS technology shares what AWS speaks over HTTP (ADR-0044, amendment 2026-09-24); HTTP itself comes from [xmip-core-transport-http](https://github.com/IlleNilsson/xmip-core-transport-http).
 
+A Send Location publishes as the access key ID its `access_key_id` setting names, with the secret access key its `secret` holds: a `password` secret kept in the Administration Database and never in configuration, read at each publish, so one set or replaced reaches the next without a restart (ADR-0019, amendment 2026-10-29; ADR-0015, amendment 2026-11-25). A Location naming a secret and no `access_key_id` is refused as the node starts: Signature Version 4 names the access key ID with every signature (`aws::access_key`). A Receive Location is delivered to and presents nothing; its confirmation is the one unsigned call.
+
 A Stream is bytes and SNS carries a message as text (ADR-0038, amendment 2026-09-26): the transport takes and hands up bytes, and turns them into UTF-8 text only on the wire. A payload that is not UTF-8 of the characters XML permits is refused at publish with the reason, never replaced.
 
 Requests go on connections kept between them (`http::endpoint::Connections`, offering HTTP/1.1): the transport holds them and hands them to every client it makes, so a call costs one exchange and not a connect, a TLS handshake and a `Connection: close`, as it did until 2026-09-27.
