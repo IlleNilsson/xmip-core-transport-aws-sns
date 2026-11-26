@@ -18,6 +18,10 @@ A Receive Location keeps its listener, bound as its transport is opened (`Config
 
 SNS waits on its connection for the answer to a notification until the runtime's whole receive cycle has ended (runtime-model section 5): `202` on `Accepted`; `401`, `403` or `422` on `Refused` (`http::server::status`), a `4xx` SNS's delivery policy does not retry, so the notification is not delivered again; `503` on `Failed`, which SNS retries by the subscription's delivery policy, so the notification is delivered again. The `SubscriptionConfirmation` is the handshake, not a Stream: it is answered at once and confirmed by fetching its `SubscribeURL`. No round trip is added: the answer is the one SNS always waited for, only later.
 
+## The declaration
+
+What a Location of this technology is configured with is two `const`s in its `declaration` module, `src/declaration.rs`, beside the code, which `Configured` reads (ADR-0064, amendment 2026-11-26): `declaration::SETTINGS`, `region`, `access_key_id`, `topic_arn`, `listen` and `timeout`, and `SCHEMES`, `aws-sns`; `access_key_id` is the AWS crate's, which this crate's declaration takes by that crate's own `declaration` feature. Built with its `declaration` feature alone (`--no-default-features --features declaration`), the crate is those and nothing more: its code and every crate the code is built on — the http technology, and with it TLS — are behind the default feature, and `tls`, which is code, turns the default on with it. So the library the surfaces load can carry it without the code, for the language server and the desktop to suggest and check an SNS Location's settings, its `access_key_id` among them, though no node in their process loaded the technology, once the gathering crate of open problem 48 links it. `test/Declaration.Test.ps1` in the estate holds that the declaration builds nothing the transport capability does not.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

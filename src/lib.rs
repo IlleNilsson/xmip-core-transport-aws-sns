@@ -41,34 +41,57 @@
 //! The transport is its own far end (ADR-0051): [`Loopback`] stands the
 //! session up at the endpoint's authority as SNS, takes the one publish,
 //! and delivers it to the subscription this transport listens as.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod client;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 mod loopback;
+#[cfg(feature = "default")]
 pub mod session;
+#[cfg(feature = "default")]
 pub mod subscription;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use client::{Client, VERSION};
-use http::endpoint::Connections;
-use http::inbound::Inbound;
-use http::server;
+#[cfg(feature = "default")]
+use http::{endpoint::Connections, inbound::Inbound, server};
+#[cfg(feature = "default")]
 pub use loopback::LOOPBACK_TOPIC;
+#[cfg(feature = "default")]
 use net::ceiling;
+#[cfg(feature = "default")]
 pub use session::{Event, Session};
+#[cfg(feature = "default")]
 pub use subscription::Delivery;
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
+#[cfg(feature = "default")]
 use transport::socket;
+#[cfg(feature = "default")]
 use transport::{Arrived, Configured, Directions, Taken, Transport};
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// The largest message SNS carries: 256 KiB.
+#[cfg(feature = "default")]
 #[must_use]
 pub const fn ceiling() -> usize {
     256 * 1024
 }
 
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct SnsTransport {
     endpoint: String,
@@ -90,6 +113,7 @@ pub struct SnsTransport {
     secret: Option<transport::Secured>,
 }
 
+#[cfg(feature = "default")]
 impl SnsTransport {
     /// Speak to the SNS endpoint at `endpoint` — `https://sns.<region>.
     /// amazonaws.com` in the cloud, `http://host:port` for a stand-in — in
@@ -211,6 +235,7 @@ impl SnsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for SnsTransport {
     fn name(&self) -> &'static str {
         "aws-sns"
@@ -276,48 +301,10 @@ impl Transport for SnsTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for SnsTransport {
-    /// The address is the SNS endpoint, `https://sns.<region>.amazonaws.com`:
-    /// published to on send, confirmed through on receive. The access key
-    /// ID is `access_key_id`; its secret access key is the Location's
-    /// `secret`, never a setting.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "region",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The AWS region requests are signed for, eu-north-1.",
-                applies: Applies::Both,
-            },
-            aws::access_key::ACCESS_KEY_ID,
-            Setting {
-                name: "topic_arn",
-                kind: Kind::Text,
-                presence: Presence::Required,
-                meaning: "The ARN of the topic published to when a send target names none.",
-                applies: Applies::Send,
-            },
-            Setting {
-                name: "listen",
-                kind: Kind::Address,
-                presence: Presence::Required,
-                meaning: "Where a Receive Location listens for deliveries: the host and port \
-                          the subscription's endpoint URL resolves to.",
-                applies: Applies::Receive,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long an endpoint that stops answering is waited on; unbounded \
-                 when left out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["aws-sns"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     /// The `topic_arn` setting: the address names only the endpoint.
     fn own_target(_address: &str) -> &str {
@@ -377,6 +364,7 @@ mod tests {
     use aws::query::refusal;
     use std::assert_matches;
     use transport::loopback::Loopback;
+    use xcore::settings::Applies;
 
     const TOPIC: &str = "arn:aws:sns:eu-north-1:123456789012:orders";
 
