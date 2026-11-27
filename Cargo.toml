@@ -42,17 +42,12 @@ serde_json = { version = "1", optional = true }
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
 
 [features]
-# The technology: its code, everything it is built on, and its declaration.
-# Without it the crate is its declaration alone (ADR-0064, amendments
-# 2026-10-22 and 2026-11-26).
+# The code and its declaration: the transport guide's "The declaration",
+# module/core/capability/transport/doc/adding-a-transport.md.
 default = ["declaration", "aws/default", "dep:http", "dep:net", "dep:codec", "dep:serde_json"]
-# The declaration alone: what a Location of this technology is configured
-# with, `declaration::SETTINGS` and `SCHEMES`, the AWS crate's
-# `access_key_id` among them, and none of the code —
-# what the surfaces' library is to carry (open problem 48).
+# The declaration alone, the AWS crate's `access_key_id` among its settings.
 declaration = ["aws/declaration"]
-# HTTPS endpoints. Off by default, as it is in the http technology; the
-# technology's code, so the default with it.
+# HTTPS endpoints: the http technology's `tls`, off by default as there.
 tls = ["default", "http/tls"]
 
 [lints.rust]
